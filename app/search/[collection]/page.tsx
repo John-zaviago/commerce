@@ -1,4 +1,4 @@
-import { getCollection, getCollectionProducts } from 'lib/shopify';
+import { optimizedGraphQLClient } from 'lib/graphql/optimized-client';
 import { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 
@@ -10,14 +10,15 @@ export async function generateMetadata(props: {
   params: Promise<{ collection: string }>;
 }): Promise<Metadata> {
   const params = await props.params;
-  const collection = await getCollection(params.collection);
+  
+  const graphqlResult = await optimizedGraphQLClient.getProductsByCategory(params.collection, { first: 1 });
+  const collection = graphqlResult.category;
 
   if (!collection) return notFound();
 
   return {
-    title: collection.seo?.title || collection.title,
-    description:
-      collection.seo?.description || collection.description || `${collection.title} products`
+    title: collection.name,
+    description: collection.description || `${collection.name} products`
   };
 }
 
@@ -29,7 +30,18 @@ export default async function CategoryPage(props: {
   const params = await props.params;
   const { sort } = searchParams as { [key: string]: string };
   const { sortKey, reverse } = sorting.find((item) => item.slug === sort) || defaultSort;
-  const products = await getCollectionProducts({ collection: params.collection, sortKey, reverse });
+  let products: any[] = [];
+  let collection: any = null;
+  let executionTime = 0;
+  let optimizations: string[] = [];
+
+  const graphqlResult = await optimizedGraphQLClient.getProductsByCategory(params.collection, { first: 20 });
+  products = graphqlResult.products;
+  collection = graphqlResult.category;
+  executionTime = graphqlResult.executionTime;
+  optimizations = graphqlResult.optimizations;
+
+  if (!collection) return notFound();
 
   return (
     <section>

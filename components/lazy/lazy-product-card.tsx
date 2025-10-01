@@ -1,0 +1,109 @@
+'use client';
+
+// import { optimizedGraphQLClient } from 'lib/graphql/optimized-client';
+import { browserPrefetchManager } from 'lib/graphql/browser-prefetch-manager';
+import { createLazyComponent, createLazyImageLoader } from 'lib/lazy-loading/lazy-loader';
+import { useRef, useState } from 'react';
+
+// Lazy load the product card component
+const LazyProductCard = createLazyComponent(
+  () => import('components/woocommerce/product-card'),
+  {
+    fallback: <ProductCardSkeleton />,
+    threshold: 0.1,
+    rootMargin: '100px',
+  }
+);
+
+// Lazy load images
+const LazyImage = createLazyImageLoader({
+  placeholder: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjZjNmNGY2Ii8+PC9zdmc+',
+  threshold: 0.1,
+  rootMargin: '50px',
+});
+
+interface LazyProductCardProps {
+  product: {
+    id: number;
+    name: string;
+    slug: string;
+    price: string;
+    regular_price: string;
+    sale_price: string;
+    on_sale: boolean;
+    images: Array<{
+      id: number;
+      src: string;
+      alt: string;
+    }>;
+    stock_status: string;
+  };
+  onHover?: () => void;
+  onPrefetch?: () => void;
+}
+
+export function LazyProductCardWrapper({ product, onHover, onPrefetch }: LazyProductCardProps) {
+  const [isHovered, setIsHovered] = useState(false);
+  const [prefetched, setPrefetched] = useState(false);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  const handleMouseEnter = () => {
+    setIsHovered(true);
+    onHover?.();
+
+    // Prefetch product details on hover
+    if (!prefetched) {
+      browserPrefetchManager.addPrefetch({
+        strategy: {
+          name: `product_${product.slug}`,
+          priority: 'medium',
+          trigger: 'hover',
+          delay: 200,
+        },
+        fetchFunction: () => optimizedGraphQLClient.getProductBySlug(product.slug, {
+          page: 'product-detail',
+          userType: 'guest',
+          device: 'desktop',
+          priority: 'performance',
+        }),
+        cacheKey: `prefetch:product:${product.slug}`,
+        ttl: 300,
+      });
+      setPrefetched(true);
+    }
+  };
+
+  const handleMouseLeave = () => {
+    setIsHovered(false);
+  };
+
+  return (
+    <div
+      ref={cardRef}
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+      className="product-card-wrapper"
+    >
+      <LazyProductCard
+        product={product}
+        lazyImage={LazyImage}
+        isHovered={isHovered}
+        onPrefetch={onPrefetch}
+      />
+    </div>
+  );
+}
+
+// Skeleton component for loading state
+function ProductCardSkeleton() {
+  return (
+    <div className="animate-pulse">
+      <div className="bg-gray-200 aspect-square rounded-lg mb-4"></div>
+      <div className="space-y-2">
+        <div className="h-4 bg-gray-200 rounded w-3/4"></div>
+        <div className="h-4 bg-gray-200 rounded w-1/2"></div>
+        <div className="h-4 bg-gray-200 rounded w-1/4"></div>
+      </div>
+    </div>
+  );
+}

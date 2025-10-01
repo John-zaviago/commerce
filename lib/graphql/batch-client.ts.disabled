@@ -1,0 +1,342 @@
+import { GraphQLClient } from 'graphql-request';
+import { redisCacheService } from '../redis/cache-service';
+import { CacheKeyGenerator, CacheTTLManager } from '../redis/cache-strategy';
+
+interface BatchRequest {
+  id: string;
+  query: string;
+  variables?: Record<string, any>;
+  queryType?: string;
+  context?: Record<string, any>;
+  resolve: (value: any) => void;
+  reject: (reason?: any) => void;
+}
+
+interface BatchConfig {
+  maxBatchSize: number;
+  batchDelay: number; // milliseconds
+  maxWaitTime: number; // milliseconds
+  enableCache: boolean;
+}
+
+export class GraphQLBatchClient {
+  private client: GraphQLClient;
+  private queue: BatchRequest[] = [];
+  private timeout: NodeJS.Timeout | null = null;
+  private config: BatchConfig;
+  private batchCounter = 0;
+
+  constructor(
+    endpoint: string,
+    config: Partial<BatchConfig> = {}
+  ) {
+    this.client = new GraphQLClient(endpoint);
+    this.config = {
+      maxBatchSize: 10,
+      batchDelay: 50, // 50ms
+      maxWaitTime: 200, // 200ms max wait
+      enableCache: true,
+      ...config,
+    };
+  }
+
+  /**
+   * Add a request to the batch queue
+   */
+  async request<T>(
+    query: string,
+    variables?: Record<string, any>,
+    options?: {
+      queryType?: string;
+      context?: Record<string, any>;
+      forceRefresh?: boolean;
+    }
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const requestId = `batch_${++this.batchCounter}_${Date.now()}`;
+      
+      const batchRequest: BatchRequest = {
+        id: requestId,
+        query,
+        variables,
+        queryType: options?.queryType || 'default',
+        context: options?.context || {},
+        resolve,
+        reject,
+      };
+
+      // Check cache first if enabled and not force refresh
+      if (this.config.enableCache && !options?.forceRefresh) {
+        this.checkCache(batchRequest).then(cached => {
+          if (cached !== null) {
+            resolve(cached);
+            return;
+          }
+          // Cache miss, add to batch queue
+          this.addToBatch(batchRequest);
+        }).catch(() => {
+          // Cache error, add to batch queue
+          this.addToBatch(batchRequest);
+        });
+      } else {
+        // No cache, add directly to batch queue
+        this.addToBatch(batchRequest);
+      }
+    });
+  }
+
+  /**
+   * Check cache for a request
+   */
+  private async checkCache<T>(request: BatchRequest): Promise<T | null> {
+    try {
+      const cacheKey = CacheKeyGenerator.generateKey(
+        { 
+          query: request.query, 
+          variables: request.variables, 
+          context: request.queryType 
+        },
+        CacheTTLManager.getConfig(request.queryType || 'default')
+      );
+      
+      return await redisCacheService.get<T>(cacheKey);
+    } catch (error) {
+      console.error('[Batch Client] Cache check error:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Add request to batch queue and schedule processing
+   */
+  private addToBatch(request: BatchRequest): void {
+    this.queue.push(request);
+    this.scheduleBatch();
+  }
+
+  /**
+   * Schedule batch processing
+   */
+  private scheduleBatch(): void {
+    // Clear existing timeout
+    if (this.timeout) {
+      clearTimeout(this.timeout);
+    }
+
+    // Process immediately if queue is full
+    if (this.queue.length >= this.config.maxBatchSize) {
+      this.processBatch();
+      return;
+    }
+
+    // Schedule batch processing
+    this.timeout = setTimeout(() => {
+      this.processBatch();
+    }, this.config.batchDelay);
+  }
+
+  /**
+   * Process the current batch
+   */
+  private async processBatch(): Promise<void> {
+    if (this.queue.length === 0) {
+      return;
+    }
+
+    // Take up to maxBatchSize requests
+    const batchToProcess = this.queue.splice(0, this.config.maxBatchSize);
+    console.log(`[Batch Client] Processing batch of ${batchToProcess.length} requests`);
+
+    try {
+      // Create batched query
+      const batchedQuery = this.createBatchedQuery(batchToProcess);
+      const batchedVariables = this.createBatchedVariables(batchToProcess);
+
+      // Execute batched request
+      const startTime = Date.now();
+      const response = await this.client.request(batchedQuery, batchedVariables);
+      const executionTime = Date.now() - startTime;
+
+      console.log(`[Batch Client] Batch executed in ${executionTime}ms`);
+
+      // Process responses and cache results
+      await this.processBatchResponses(batchToProcess, response);
+
+    } catch (error) {
+      console.error('[Batch Client] Batch execution error:', error);
+      // Reject all requests in the batch
+      batchToProcess.forEach(request => {
+        request.reject(error);
+      });
+    }
+  }
+
+  /**
+   * Create a single batched GraphQL query
+   */
+  private createBatchedQuery(requests: BatchRequest[]): string {
+    const queryParts = requests.map((request, index) => {
+      // Extract the query body (remove 'query QueryName' part)
+      const queryBody = request.query
+        .replace(/^query\s+\w+\s*/, '') // Remove 'query QueryName'
+        .replace(/^query\s*/, '') // Remove 'query' if no name
+        .trim();
+
+      return `query${index}: ${queryBody}`;
+    });
+
+    return `query BatchQuery { ${queryParts.join('\n') } }`;
+  }
+
+  /**
+   * Create batched variables object
+   */
+  private createBatchedVariables(requests: BatchRequest[]): Record<string, any> {
+    const variables: Record<string, any> = {};
+
+    requests.forEach((request, index) => {
+      if (request.variables) {
+        Object.keys(request.variables).forEach(key => {
+          variables[`query${index}_${key}`] = request.variables![key];
+        });
+      }
+    });
+
+    return variables;
+  }
+
+  /**
+   * Process batch responses and resolve individual requests
+   */
+  private async processBatchResponses(
+    requests: BatchRequest[], 
+    response: Record<string, any>
+  ): Promise<void> {
+    const cachePromises: Promise<boolean>[] = [];
+
+    for (let i = 0; i < requests.length; i++) {
+      const request = requests[i];
+      const responseKey = `query${i}`;
+      const data = response[responseKey];
+
+      if (data !== undefined) {
+        // Resolve the request
+        request.resolve(data);
+
+        // Cache the result if enabled
+        if (this.config.enableCache) {
+          const cachePromise = this.cacheResult(request, data);
+          cachePromises.push(cachePromise);
+        }
+      } else {
+        // No data for this request
+        request.reject(new Error(`No data returned for request ${request.id}`));
+      }
+    }
+
+    // Wait for all cache operations to complete
+    await Promise.allSettled(cachePromises);
+  }
+
+  /**
+   * Cache the result of a request
+   */
+  private async cacheResult(request: BatchRequest, data: any): Promise<boolean> {
+    try {
+      const cacheKey = CacheKeyGenerator.generateKey(
+        { 
+          query: request.query, 
+          variables: request.variables, 
+          context: request.queryType 
+        },
+        CacheTTLManager.getConfig(request.queryType || 'default')
+      );
+
+      const ttl = CacheTTLManager.getTTL(
+        request.queryType || 'default', 
+        request.context || {}
+      );
+
+      return await redisCacheService.set(cacheKey, data, ttl);
+    } catch (error) {
+      console.error('[Batch Client] Cache set error:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Execute multiple queries in a single batch
+   */
+  async batchRequest<T>(
+    requests: Array<{
+      query: string;
+      variables?: Record<string, any>;
+      queryType?: string;
+      context?: Record<string, any>;
+    }>
+  ): Promise<T[]> {
+    const promises = requests.map(request =>
+      this.request<T>(request.query, request.variables, {
+        queryType: request.queryType,
+        context: request.context,
+      })
+    );
+
+    return Promise.all(promises);
+  }
+
+  /**
+   * Get batch statistics
+   */
+  getStats(): {
+    queueLength: number;
+    config: BatchConfig;
+    isProcessing: boolean;
+  } {
+    return {
+      queueLength: this.queue.length,
+      config: this.config,
+      isProcessing: this.timeout !== null,
+    };
+  }
+
+  /**
+   * Clear the batch queue
+   */
+  clearQueue(): void {
+    if (this.timeout) {
+      clearTimeout(this.timeout);
+      this.timeout = null;
+    }
+    
+    // Reject all queued requests
+    this.queue.forEach(request => {
+      request.reject(new Error('Batch queue cleared'));
+    });
+    
+    this.queue = [];
+  }
+
+  /**
+   * Force process current batch
+   */
+  async flushBatch(): Promise<void> {
+    if (this.timeout) {
+      clearTimeout(this.timeout);
+      this.timeout = null;
+    }
+    await this.processBatch();
+  }
+}
+
+// Create singleton instance
+const GRAPHQL_ENDPOINT = process.env.WOOCOMMERCE_URL
+  ? `${process.env.WOOCOMMERCE_URL}/graphql`
+  : 'https://johnp500.sg-host.com/graphql';
+
+export const graphqlBatchClient = new GraphQLBatchClient(GRAPHQL_ENDPOINT, {
+  maxBatchSize: 8, // Optimal for most use cases
+  batchDelay: 30, // 30ms delay
+  maxWaitTime: 150, // 150ms max wait
+  enableCache: true,
+});

@@ -1,0 +1,169 @@
+'use client';
+
+import { graphqlPrefetchManager } from 'lib/graphql/prefetch-manager';
+import { useEffect, useState } from 'react';
+
+export default function SimplePrefetchDemoPage() {
+  const [prefetchStats, setPrefetchStats] = useState<any>(null);
+  const [logs, setLogs] = useState<string[]>([]);
+
+  // Add log function
+  const addLog = (message: string) => {
+    const timestamp = new Date().toLocaleTimeString();
+    setLogs(prev => [`[${timestamp}] ${message}`, ...prev.slice(0, 9)]);
+  };
+
+  // Update prefetch stats
+  useEffect(() => {
+    const updateStats = () => {
+      const stats = graphqlPrefetchManager.getStats();
+      setPrefetchStats(stats);
+    };
+
+    updateStats();
+    const interval = setInterval(updateStats, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Override console.log to capture prefetch logs
+  useEffect(() => {
+    const originalLog = console.log;
+    console.log = (...args) => {
+      if (args[0] && typeof args[0] === 'string' && args[0].includes('[Prefetch]')) {
+        addLog(args.join(' '));
+      }
+      originalLog(...args);
+    };
+
+    return () => {
+      console.log = originalLog;
+    };
+  }, []);
+
+  // Test prefetching on button click
+  const testPrefetch = () => {
+    addLog('Testing prefetch functionality...');
+    
+    graphqlPrefetchManager.addPrefetch({
+      strategy: {
+        name: 'test_prefetch',
+        priority: 'high',
+        trigger: 'click',
+      },
+      fetchFunction: async () => {
+        addLog('Executing prefetch function...');
+        return new Promise(resolve => {
+          setTimeout(() => {
+            addLog('Prefetch completed successfully!');
+            resolve({ success: true, timestamp: Date.now() });
+          }, 1000);
+        });
+      },
+      cacheKey: 'test:prefetch:demo',
+      ttl: 300,
+    });
+  };
+
+  // Test hover prefetching
+  const handleHover = () => {
+    addLog('Hover detected - triggering prefetch...');
+    
+    graphqlPrefetchManager.addPrefetch({
+      strategy: {
+        name: 'hover_test',
+        priority: 'medium',
+        trigger: 'hover',
+        delay: 200,
+      },
+      fetchFunction: async () => {
+        addLog('Hover prefetch executing...');
+        return new Promise(resolve => {
+          setTimeout(() => {
+            addLog('Hover prefetch completed!');
+            resolve({ hoverData: true, timestamp: Date.now() });
+          }, 500);
+        });
+      },
+      cacheKey: 'test:hover:demo',
+      ttl: 300,
+    });
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-8">
+      <h1 className="text-3xl font-bold mb-6">🚀 Simple Prefetch Demo</h1>
+      
+      {/* Stats */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div className="bg-white p-4 border border-gray-200 rounded-lg">
+          <h3 className="text-lg font-semibold mb-3">📊 Prefetch Stats</h3>
+          {prefetchStats ? (
+            <div className="space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span>Queue Length:</span>
+                <span className="font-mono">{prefetchStats.queueLength}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Active Prefetches:</span>
+                <span className="font-mono">{prefetchStats.activePrefetches}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Route History:</span>
+                <span className="font-mono">{prefetchStats.routeHistory.length}</span>
+              </div>
+            </div>
+          ) : (
+            <div className="text-gray-500">Loading stats...</div>
+          )}
+        </div>
+
+        <div className="bg-white p-4 border border-gray-200 rounded-lg">
+          <h3 className="text-lg font-semibold mb-3">📝 Live Logs</h3>
+          <div className="h-32 overflow-y-auto bg-gray-50 p-2 rounded text-xs font-mono">
+            {logs.length > 0 ? (
+              logs.map((log, index) => (
+                <div key={index} className="text-green-600 mb-1">
+                  {log}
+                </div>
+              ))
+            ) : (
+              <div className="text-gray-500">No logs yet. Click buttons to test prefetching!</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Test Buttons */}
+      <div className="bg-white p-6 border border-gray-200 rounded-lg mb-8">
+        <h3 className="text-lg font-semibold mb-4">🎮 Test Prefetching</h3>
+        <div className="space-y-4">
+          <button
+            onClick={testPrefetch}
+            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
+          >
+            Test Click Prefetch
+          </button>
+          
+          <div
+            onMouseEnter={handleHover}
+            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 cursor-pointer inline-block"
+          >
+            Hover for Prefetch Test
+          </div>
+        </div>
+      </div>
+
+      {/* Instructions */}
+      <div className="bg-blue-50 p-4 border border-blue-200 rounded-lg">
+        <h3 className="text-lg font-semibold text-blue-800 mb-2">How to Test:</h3>
+        <ul className="text-sm text-blue-700 space-y-1">
+          <li>• <strong>Click "Test Click Prefetch"</strong> - Triggers immediate prefetch</li>
+          <li>• <strong>Hover over green button</strong> - Triggers hover prefetch with delay</li>
+          <li>• <strong>Watch the logs</strong> - See prefetch activity in real-time</li>
+          <li>• <strong>Check stats</strong> - Monitor queue length and active prefetches</li>
+          <li>• <strong>Open DevTools</strong> - See console logs and network activity</li>
+        </ul>
+      </div>
+    </div>
+  );
+}

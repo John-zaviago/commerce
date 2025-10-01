@@ -2,18 +2,16 @@
 
 import { PlusIcon } from '@heroicons/react/24/outline';
 import clsx from 'clsx';
-import { addItem } from 'components/cart/actions';
-import { useProduct } from 'components/product/product-context';
-import { Product, ProductVariant } from 'lib/shopify/types';
-import { useActionState } from 'react';
-import { useCart } from './cart-context';
+import { GraphQLProduct } from 'lib/graphql/types';
 
 function SubmitButton({
   availableForSale,
-  selectedVariantId
+  product,
+  selectedVariation
 }: {
   availableForSale: boolean;
-  selectedVariantId: string | undefined;
+  product: GraphQLProduct;
+  selectedVariation: any;
 }) {
   const buttonClasses =
     'relative flex w-full items-center justify-center rounded-full bg-blue-600 p-4 tracking-wide text-white';
@@ -27,27 +25,17 @@ function SubmitButton({
     );
   }
 
-  if (!selectedVariantId) {
-    return (
-      <button
-        aria-label="Please select an option"
-        disabled
-        className={clsx(buttonClasses, disabledClasses)}
-      >
-        <div className="absolute left-0 ml-4">
-          <PlusIcon className="h-5" />
-        </div>
-        Add To Cart
-      </button>
-    );
-  }
-
   return (
     <button
       aria-label="Add to cart"
       className={clsx(buttonClasses, {
         'hover:opacity-90': true
       })}
+      onClick={() => {
+        // TODO: Implement WooCommerce cart functionality
+        const productToAdd = selectedVariation || product;
+        alert(`Adding ${productToAdd.name} to cart${selectedVariation ? ` (${selectedVariation.attributes.map((attr: any) => `${attr.name}: ${attr.option}`).join(', ')})` : ''}`);
+      }}
     >
       <div className="absolute left-0 ml-4">
         <PlusIcon className="h-5" />
@@ -57,38 +45,25 @@ function SubmitButton({
   );
 }
 
-export function AddToCart({ product }: { product: Product }) {
-  const { variants, availableForSale } = product;
-  const { addCartItem } = useCart();
-  const { state } = useProduct();
-  const [message, formAction] = useActionState(addItem, null);
-
-  const variant = variants.find((variant: ProductVariant) =>
-    variant.selectedOptions.every(
-      (option) => option.value === state[option.name.toLowerCase()]
-    )
-  );
-  const defaultVariantId = variants.length === 1 ? variants[0]?.id : undefined;
-  const selectedVariantId = variant?.id || defaultVariantId;
-  const addItemAction = formAction.bind(null, selectedVariantId);
-  const finalVariant = variants.find(
-    (variant) => variant.id === selectedVariantId
-  )!;
+export function AddToCart({ product }: { product: GraphQLProduct }) {
+  // For GraphQL products, we don't have variation selection yet
+  const selectedVariation = null;
+  
+  // Determine availability based on whether it's a variable product with selected variation
+  const availableForSale = selectedVariation 
+    ? selectedVariation.stockStatus === 'IN_STOCK' && selectedVariation.purchasable
+    : product.stockStatus === 'IN_STOCK';
 
   return (
-    <form
-      action={async () => {
-        addCartItem(finalVariant, product);
-        addItemAction();
-      }}
-    >
-      <SubmitButton
-        availableForSale={availableForSale}
-        selectedVariantId={selectedVariantId}
+    <div>
+      <SubmitButton 
+        availableForSale={availableForSale} 
+        product={product}
+        selectedVariation={selectedVariation}
       />
-      <p aria-live="polite" className="sr-only" role="status">
-        {message}
+      <p className="mt-2 text-sm text-gray-600">
+        Cart functionality will be implemented soon.
       </p>
-    </form>
+    </div>
   );
 }

@@ -1,0 +1,154 @@
+'use client';
+
+import Grid from 'components/grid';
+import EnhancedProductGridItems from 'components/lazy/enhanced-product-grid-items';
+import { browserPrefetchManager } from 'lib/graphql/browser-prefetch-manager';
+import { WooCommerceProduct } from 'lib/woocommerce/types';
+import { useSearchParams } from 'next/navigation';
+import { useEffect, useState } from 'react';
+
+export default function EnhancedSearchPage() {
+  const searchParams = useSearchParams();
+  const searchValue = searchParams.get('q') || '';
+  const [products, setProducts] = useState<WooCommerceProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [prefetchStats, setPrefetchStats] = useState<any>(null);
+
+  // Load products
+  useEffect(() => {
+    const loadProducts = async () => {
+      setLoading(true);
+      try {
+        // Simulate API call - replace with your actual GraphQL call
+        const mockProducts: WooCommerceProduct[] = Array.from({ length: 20 }, (_, i) => ({
+          id: i + 1,
+          name: `Product ${i + 1}${searchValue ? ` - ${searchValue}` : ''}`,
+          slug: `product-${i + 1}`,
+          price: `$${(Math.random() * 100 + 10).toFixed(2)}`,
+          regular_price: `$${(Math.random() * 100 + 10).toFixed(2)}`,
+          sale_price: Math.random() > 0.7 ? `$${(Math.random() * 50 + 5).toFixed(2)}` : '',
+          on_sale: Math.random() > 0.7,
+          images: [{
+            id: i + 1,
+            src: `https://picsum.photos/400/400?random=${i + 1}`,
+            alt: `Product ${i + 1}`,
+          }],
+          stock_status: Math.random() > 0.1 ? 'instock' : 'outofstock',
+        }));
+
+        setProducts(mockProducts);
+      } catch (error) {
+        console.error('Error loading products:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadProducts();
+  }, [searchValue]);
+
+  // Update prefetch stats
+  useEffect(() => {
+    const updateStats = () => {
+      const stats = browserPrefetchManager.getStats();
+      setPrefetchStats(stats);
+    };
+
+    updateStats();
+    const interval = setInterval(updateStats, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  // Prefetch search suggestions on idle
+  useEffect(() => {
+    if (searchValue) {
+      browserPrefetchManager.addPrefetch({
+        strategy: {
+          name: 'search_suggestions',
+          priority: 'low',
+          trigger: 'idle',
+        },
+        fetchFunction: async () => {
+          console.log(`[Prefetch] Loading search suggestions for: ${searchValue}`);
+          return new Promise(resolve => {
+            setTimeout(() => {
+              resolve({
+                suggestions: [`${searchValue} related 1`, `${searchValue} related 2`, `${searchValue} related 3`],
+              });
+            }, 200);
+          });
+        },
+        cacheKey: `search:suggestions:${searchValue}`,
+        ttl: 600,
+      });
+    }
+  }, [searchValue]);
+
+  const resultsText = products.length > 1 ? 'results' : 'result';
+
+  return (
+    <div className="enhanced-search-page">
+      {/* Prefetch Stats Display */}
+      {prefetchStats && (
+        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+          <h3 className="text-sm font-semibold text-blue-800 mb-2">🚀 Prefetching Stats</h3>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+            <div>
+              <span className="font-medium">Queue:</span> {prefetchStats.queueLength}
+            </div>
+            <div>
+              <span className="font-medium">Active:</span> {prefetchStats.activePrefetches}
+            </div>
+            <div>
+              <span className="font-medium">Routes:</span> {prefetchStats.routeHistory.length}
+            </div>
+            <div>
+              <span className="font-medium">Behavior:</span> {Object.keys(prefetchStats.userBehavior).length}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Search Results */}
+      {searchValue ? (
+        <p className="mb-4">
+          {products.length === 0
+            ? 'There are no products that match '
+            : `Showing ${products.length} ${resultsText} for `}
+          <span className="font-bold">&quot;{searchValue}&quot;</span>
+        </p>
+      ) : null}
+
+      {loading ? (
+        <div className="flex justify-center items-center py-12">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
+          <span className="ml-2 text-gray-600">Loading products...</span>
+        </div>
+      ) : products.length > 0 ? (
+        <Grid className="grid-cols-1 sm:grid-cols-2 lg:grid-cols-3">
+          <EnhancedProductGridItems 
+            products={products} 
+            enablePrefetching={true}
+            enableLazyLoading={true}
+          />
+        </Grid>
+      ) : (
+        <div className="text-center py-12 text-gray-500">
+          No products found
+        </div>
+      )}
+
+      {/* Instructions */}
+      <div className="mt-8 p-4 bg-gray-50 border border-gray-200 rounded-lg">
+        <h3 className="text-sm font-semibold text-gray-800 mb-2">🎯 How to Test Prefetching & Lazy Loading:</h3>
+        <ul className="text-xs text-gray-600 space-y-1">
+          <li>• <strong>Hover over products</strong> - Check console for prefetch logs</li>
+          <li>• <strong>Scroll down</strong> - More products load automatically</li>
+          <li>• <strong>Wait 2 seconds</strong> - Idle prefetching will trigger</li>
+          <li>• <strong>Check stats above</strong> - Monitor prefetch queue and activity</li>
+          <li>• <strong>Open DevTools</strong> - See network requests and console logs</li>
+        </ul>
+      </div>
+    </div>
+  );
+}

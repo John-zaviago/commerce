@@ -1,0 +1,80 @@
+import { redisEnhancedGraphQLClient } from 'lib/graphql/redis-enhanced-client';
+import { redisCacheService } from 'lib/redis/cache-service';
+import { redisHealthCheck } from 'lib/redis/client';
+import { NextResponse } from 'next/server';
+
+export async function GET() {
+  try {
+    const results: any = {
+      timestamp: new Date().toISOString(),
+      redis: {},
+      cache: {},
+      graphql: {},
+    };
+
+    // Test Redis connection
+    const redisHealth = await redisHealthCheck();
+    results.redis = {
+      status: redisHealth.status,
+      message: redisHealth.message,
+      connected: redisHealth.connected,
+    };
+
+    // Test cache operations
+    const testKey = 'health-check-test';
+    const testData = { message: 'Redis cache is working', timestamp: Date.now() };
+    
+    const setResult = await redisCacheService.set(testKey, testData, 60);
+    const getResult = await redisCacheService.get(testKey);
+    const existsResult = await redisCacheService.exists(testKey);
+    const deleteResult = await redisCacheService.delete(testKey);
+
+    results.cache = {
+      set: setResult,
+      get: getResult !== null,
+      exists: existsResult,
+      delete: deleteResult,
+      dataMatch: JSON.stringify(getResult) === JSON.stringify(testData),
+    };
+
+    // Test GraphQL client health
+    const graphqlHealth = await redisEnhancedGraphQLClient.healthCheck();
+    results.graphql = {
+      status: graphqlHealth.status,
+      latency: graphqlHealth.latency,
+    };
+
+    // Get cache statistics
+    const cacheStats = await redisCacheService.getStats();
+    results.cache.stats = cacheStats;
+
+    // Overall health status
+    const isHealthy = 
+      results.redis.status === 'healthy' &&
+      results.cache.set &&
+      results.cache.get &&
+      results.cache.dataMatch &&
+      results.graphql.status === 'healthy';
+
+    return NextResponse.json({
+      success: true,
+      healthy: isHealthy,
+      results,
+      message: isHealthy 
+        ? 'Redis caching system is healthy and working correctly'
+        : 'Redis caching system has issues that need attention',
+    });
+
+  } catch (error) {
+    console.error('[Redis Health Check] Error:', error);
+    return NextResponse.json(
+      {
+        success: false,
+        healthy: false,
+        error: error instanceof Error ? error.message : 'Unknown error',
+        message: 'Redis health check failed',
+      },
+      { status: 500 }
+    );
+  }
+}
